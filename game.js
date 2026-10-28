@@ -1001,6 +1001,23 @@ function openModal(html) {
 function closeModal() {
   $modal.hidden = true;
   $modal.innerHTML = "";
+  confirmAction = null;
+}
+
+// Themed replacement for the browser's confirm() dialog.
+let confirmAction = null;
+function askConfirm({ kicker, title, body, ok, cancel = "STAY" }, onOk) {
+  openModal(`
+    <p class="kicker" style="text-align:center">${esc(kicker)}</p>
+    <h2>${esc(title)}</h2>
+    <div class="divider">&#10022;</div>
+    <p class="lead" style="text-align:center;margin-top:0">${esc(body)}</p>
+    <div class="btn-row">
+      <button class="btn" data-action="close-modal"><span>${esc(cancel)}</span></button>
+      <button class="btn primary small" data-action="confirm-ok"><span>${esc(ok)}</span></button>
+    </div>`);
+  confirmAction = onOk;
+  $modal.querySelector('[data-action="close-modal"]').focus();
 }
 
 function showRules() {
@@ -1090,6 +1107,11 @@ const actions = {
   rules: showRules,
   settings: showSettings,
   "close-modal": closeModal,
+  "confirm-ok": () => {
+    const fn = confirmAction;
+    closeModal();
+    fn?.();
+  },
 
   "pick-mask": ({ i }) => {
     const m = Number(i);
@@ -1117,11 +1139,21 @@ const actions = {
     render();
   },
   leave: () => {
-    if (!confirm(amHost() ? "Leave and end the ball for everyone?" : "Leave the ball?")) return;
-    leaveNet();
-    view = "profile";
-    notice = "";
-    render();
+    const host = amHost();
+    askConfirm(
+      {
+        kicker: "Slipping away?",
+        title: host ? "End the ball?" : "Leave the ball?",
+        body: host ? "You're the host. If you leave, the ball ends for every guest." : "You can rejoin with the room code while the ball is still going.",
+        ok: host ? "END THE BALL" : "LEAVE",
+      },
+      () => {
+        leaveNet();
+        view = "profile";
+        notice = "";
+        render();
+      }
+    );
   },
   invite: async () => {
     const url = `${location.origin}${location.pathname}?room=${S.code}`;
