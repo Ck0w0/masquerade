@@ -354,7 +354,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   padding: 22px;
   margin-top: 22px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), inset 0 0 0 4px rgba(20, 8, 11, 0.6), inset 0 0 0 5px rgba(212, 168, 101, 0.12);
-  text-align: left;
+  text-align: start;
 }
 
 .field-label {
@@ -373,6 +373,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
 .input {
   flex: 1;
   min-width: 0;
+  width: 100%;
   background: #0f0608;
   border: 1px solid var(--gold-dim);
   border-radius: 10px;
@@ -524,7 +525,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
 
 .gold { color: var(--gold); }
 .small { font-size: 15px; }
-.grow { flex: 1; min-width: 0; text-align: left; }
+.grow { flex: 1; min-width: 0; text-align: start; }
 
 /* ---------------------------------------------------------------- lobby */
 
@@ -794,6 +795,37 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   color: var(--muted);
 }
 .chip[aria-pressed="true"] { background: rgba(107, 20, 36, 0.6); border-color: var(--gold); color: var(--cream); }
+
+/* ---------------------------------------------------------------- arabic */
+
+:root[lang="ar"] {
+  --title: "Amiri", "Traditional Arabic", serif;
+  --body: "Amiri", "Traditional Arabic", serif;
+}
+:root[lang="ar"] body { line-height: 1.7; }
+/* Letter spacing breaks the joins between Arabic letters. */
+:root[lang="ar"] *,
+:root[lang="ar"] *::before,
+:root[lang="ar"] *::after { letter-spacing: 0 !important; }
+:root[lang="ar"] .kicker,
+:root[lang="ar"] .field-label,
+:root[lang="ar"] .link,
+:root[lang="ar"] .tagline { font-size: 16px; font-weight: 700; }
+:root[lang="ar"] .btn > span { font-size: 20px; font-weight: 700; }
+:root[lang="ar"] .btn.primary > span { font-size: 30px; }
+:root[lang="ar"] .btn.primary.small > span { font-size: 24px; }
+:root[lang="ar"] .persona,
+:root[lang="ar"] .mask-name,
+:root[lang="ar"] .clue-name,
+:root[lang="ar"] .guest-card small,
+:root[lang="ar"] .reveal-list .tag { font-size: 15px; font-weight: 700; }
+:root[lang="ar"] .title-main { line-height: 1.3; }
+:root[lang="ar"] .room-code,
+:root[lang="ar"] .code-input { font-family: "Cinzel", serif; }
+:root[lang="ar"] .code-input { letter-spacing: 0.4em !important; }
+:root[lang="ar"] .room-code { letter-spacing: 0.18em !important; }
+:root[dir="rtl"] .toggle::after { left: auto; right: 3px; }
+:root[dir="rtl"] .toggle[aria-checked="true"]::after { transform: translateX(-22px); }
 
 /* ---------------------------------------------------------------- small screens */
 

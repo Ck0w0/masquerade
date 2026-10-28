@@ -3,6 +3,8 @@
 // The Masquerade: an online imposter word game.
 // One phone hosts a room (peer-to-peer via PeerJS) and friends join with a 4-letter code.
 // The host's browser runs the game and sends each guest only their own secret.
+// Messages carry word positions and text keys, never English text, so each phone
+// shows the game in its own language (see i18n.js).
 
 const MIN_PLAYERS = 3;
 const MAX_PLAYERS = 12;
@@ -39,8 +41,7 @@ const store = {
 
 // ---------------------------------------------------------------- helpers
 
-const esc = (s) =>
-  String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const esc = escHTML;
 const rand = (n) => Math.floor(Math.random() * n);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const shuffle = (a) => {
@@ -50,7 +51,6 @@ const shuffle = (a) => {
   }
   return a;
 };
-const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
 const fmtTime = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 const maxImposters = (n) => Math.max(1, Math.floor((n - 1) / 2));
 const randomToken = () => Array.from({ length: 4 }, () => Math.random().toString(36).slice(2, 8)).join("");
@@ -59,6 +59,7 @@ const validMask = (m) => Number.isInteger(m) && m >= 0 && m < MASKS.length;
 
 const settings = Object.assign(
   {
+    lang: "en",
     imposterSeesCategory: true,
     imposterNeverFirst: true,
     clueRounds: 2,
@@ -69,6 +70,7 @@ const settings = Object.assign(
   store.get("settings", {})
 );
 settings.categories = settings.categories.filter((c) => c in WORDS);
+applyLang(settings.lang);
 
 const profile = Object.assign({ name: "", mask: rand(MASKS.length), token: randomToken() }, store.get("profile", {}));
 if (!validMask(profile.mask)) profile.mask = 0;
@@ -80,11 +82,11 @@ saveProfile();
 let view = "menu"; // menu | profile | connecting | game
 let net = null; // { isHost, peer, code, conn, retries, closing }
 let S = null; // latest public state from the host
-let myRole = null; // { isImposter, word, category, imposterCount }
+let myRole = null; // { isImposter, cat, idx, imposterCount }
 let myVote = null;
 let endsAt = null;
 let notice = "";
-let connectingText = "";
+let connecting = null; // { key, vars } for the connecting screen
 let reconnecting = false;
 let pendingCode = (new URLSearchParams(location.search).get("room") || "").toUpperCase().slice(0, 4);
 const myId = profile.token;
@@ -93,6 +95,8 @@ const me = () => S?.players.find((p) => p.id === myId);
 const playerById = (id) => S?.players.find((p) => p.id === id);
 const amHost = () => !!net?.isHost;
 const maskImg = (i, cls = "") => maskArt(i, cls);
+const clueText = (c) => (c == null ? t("silence") : esc(c));
+const gold = (s) => ({ html: `<b class="gold">${esc(s)}</b>` });
 
 function toast(text) {
   $toast.textContent = text;
@@ -101,19 +105,26 @@ function toast(text) {
   toast.handle = setTimeout(() => $toast.classList.remove("show"), 2800);
 }
 
+// t() returns HTML; toasts and notices are plain text.
+const plain = (html) => {
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  return d.textContent;
+};
+
 // ---------------------------------------------------------------- shared UI pieces
 
 function leaveBar() {
-  return `<div class="topbar"><button class="link" data-action="leave">&larr; LEAVE</button>
-    <span class="link" style="pointer-events:none">ROOM ${esc(S.code)}</span></div>`;
+  return `<div class="topbar"><button class="link" data-action="leave">${t("leave")}</button>
+    <span class="link" style="pointer-events:none">${t("room", { code: { html: `<span dir="ltr">${esc(S.code)}</span>` } })}</span></div>`;
 }
 
 function roleBadge() {
-  if (!myRole || !me()?.inRound) return `<div class="role-badge">Spectating this dance</div>`;
+  if (!myRole || !me()?.inRound) return `<div class="role-badge">${t("spectating")}</div>`;
   if (myRole.isImposter) {
-    return `<div class="role-badge imp">You are the Imposter${myRole.category ? ` &middot; ${esc(myRole.category)}` : ""}</div>`;
+    return `<div class="role-badge imp">${t("badgeImp")}${myRole.cat ? ` &middot; ${esc(catName(myRole.cat))}` : ""}</div>`;
   }
-  return `<div class="role-badge">Your word: <b>${esc(myRole.word)}</b> &middot; ${esc(myRole.category)}</div>`;
+  return `<div class="role-badge">${t("badgeWord", { word: { html: `<b>${esc(wordText(myRole.cat, myRole.idx))}</b>` } })} &middot; ${esc(catName(myRole.cat))}</div>`;
 }
 
 function clueBoard() {
@@ -122,11 +133,11 @@ function clueBoard() {
       const p = playerById(id);
       if (!p) return "";
       const clues = p.clues.length
-        ? p.clues.map(esc).join(' <span class="sep">&#10022;</span> ')
+        ? p.clues.map(clueText).join(' <span class="sep">&#10022;</span> ')
         : '<span class="muted">&hellip;</span>';
       return `<div class="clue-row ${S.turn?.id === id ? "active" : ""} ${p.connected ? "" : "away"}">
         ${maskImg(p.mask)}
-        <div><div class="clue-name">${esc(p.name)}${p.id === myId ? ' <span class="muted">(you)</span>' : ""}</div>
+        <div><div class="clue-name">${esc(p.name)}${p.id === myId ? ` <span class="muted">${t("you")}</span>` : ""}</div>
         <div class="clue-words">${clues}</div></div>
       </div>`;
     })
@@ -141,8 +152,23 @@ function timerEl() {
 function maskPicker(taken = new Set()) {
   return `<div class="mask-picker">${MASKS.map(
     (_, i) => `<button class="mask-opt ${i === profile.mask ? "selected" : ""}" data-action="pick-mask" data-i="${i}"
-        ${taken.has(i) ? "disabled" : ""} title="${esc(MASKS[i].name)}" aria-label="${esc(MASKS[i].name)}">${maskImg(i)}</button>`
+        ${taken.has(i) ? "disabled" : ""} title="${esc(maskName(i))}" aria-label="${esc(maskName(i))}">${maskImg(i)}</button>`
   ).join("")}</div>`;
+}
+
+function resultLines(r) {
+  const name = playerById(r.accusedId)?.name ?? "";
+  const names = r.imposterIds.map((id) => playerById(id)?.name ?? "?").join(t("and"));
+  switch (r.reason) {
+    case "noAgree": return [t("r_noAgree_h"), t("r_noAgree_d")];
+    case "innocent": return [t("r_innocent_h", { name }), t(r.imposterIds.length > 1 ? "r_innocent_d2" : "r_innocent_d", { names })];
+    case "named": return [t("r_named_h", { name }), t("r_named_d")];
+    case "missed": return [t("r_missed_h", { name }), t("r_missed_d")];
+    case "timeout": return [t("r_missed_h", { name }), t("r_timeout_d")];
+    case "fled": return [t("r_fled_h"), t("r_fled_d")];
+    case "fledGuess": return [t("r_fled_h"), t("r_fledGuess_d")];
+    default: return ["", ""];
+  }
 }
 
 // ---------------------------------------------------------------- screens
@@ -153,15 +179,15 @@ const screens = {
       <section class="screen">
         ${maskImg(0, "mask-art")}
         <h1>
-          <span class="title-the" style="display:block">The</span>
-          <span class="title-main" style="display:block">Masquerade</span>
+          <span class="title-the" style="display:block">${t("the")}</span>
+          <span class="title-main" style="display:block">${t("masquerade")}</span>
         </h1>
         <div class="divider">&#10022;</div>
-        <p class="tagline">EVERYONE HIDES A SECRET</p>
+        <p class="tagline">${t("tagline")}</p>
         <div class="menu-buttons">
-          <button class="btn primary" data-action="play"><span>PLAY</span></button>
-          <button class="btn" style="width:94%" data-action="rules"><span>HOW TO PLAY</span></button>
-          <button class="btn" style="width:94%" data-action="settings"><span>SETTINGS</span></button>
+          <button class="btn primary" data-action="play"><span>${t("play")}</span></button>
+          <button class="btn" style="width:94%" data-action="rules"><span>${t("howTo")}</span></button>
+          <button class="btn" style="width:94%" data-action="settings"><span>${t("settings")}</span></button>
         </div>
       </section>`;
   },
@@ -169,28 +195,28 @@ const screens = {
   profile() {
     const join = `
       <div class="panel">
-        <span class="field-label">JOIN A FRIEND'S BALL</span>
+        <span class="field-label">${t("joinFriend")}</span>
         <form class="add-row" data-form="join">
-          <input class="input code-input" name="code" maxlength="4" placeholder="CODE" autocomplete="off"
-                 autocapitalize="characters" spellcheck="false" value="${esc(pendingCode)}" data-keep="code">
-          <button class="square-btn" type="submit">JOIN</button>
+          <input class="input code-input" name="code" maxlength="4" placeholder="${t("codePh")}" autocomplete="off"
+                 autocapitalize="characters" spellcheck="false" dir="ltr" value="${esc(pendingCode)}" data-keep="code">
+          <button class="square-btn" type="submit">${t("join")}</button>
         </form>
       </div>`;
     const host = `
       <div class="btn-row">
-        <button class="btn ${pendingCode ? "" : "primary small"}" data-action="host"><span>HOST A BALL</span></button>
+        <button class="btn ${pendingCode ? "" : "primary small"}" data-action="host"><span>${t("hostBall")}</span></button>
       </div>`;
     return `
-      <div class="topbar"><button class="link" data-action="menu">&larr; MENU</button></div>
+      <div class="topbar"><button class="link" data-action="menu">${t("backMenu")}</button></div>
       <section class="screen">
-        <p class="kicker">Your disguise</p>
+        <p class="kicker">${t("yourDisguise")}</p>
         ${maskImg(profile.mask, "hero-mask")}
-        <p class="mask-name">${esc(MASKS[profile.mask].name)}</p>
+        <p class="mask-name">${esc(maskName(profile.mask))}</p>
         <div class="panel">
-          <label class="field-label" for="name-input">YOUR NAME</label>
-          <input id="name-input" class="input" maxlength="16" placeholder="Your name" autocomplete="off"
+          <label class="field-label" for="name-input">${t("yourName")}</label>
+          <input id="name-input" class="input" maxlength="16" placeholder="${t("namePh")}" autocomplete="off"
                  value="${esc(profile.name)}" data-keep="name">
-          <span class="field-label" style="margin-top:18px">CHOOSE YOUR MASK</span>
+          <span class="field-label" style="margin-top:18px">${t("chooseMask")}</span>
           ${maskPicker()}
         </div>
         ${notice ? `<p class="notice">${esc(notice)}</p>` : ""}
@@ -202,49 +228,50 @@ const screens = {
     return `
       <section class="screen">
         <div class="spinner"></div>
-        <p class="lead">${esc(connectingText)}</p>
-        <button class="link" style="margin-top:24px" data-action="cancel-connect">CANCEL</button>
+        <p class="lead">${t(connecting.key, connecting.vars)}</p>
+        <button class="link" style="margin-top:24px" data-action="cancel-connect">${t("cancel")}</button>
       </section>`;
   },
 
   g_lobby() {
     const n = S.players.length;
     const cards = S.players
-      .map(
-        (p) => `
+      .map((p) => {
+        const tags = [p.id === S.hostId && t("hostTag"), p.id === myId && t("youTag"), p.score && t("pts", { n: p.score })].filter(Boolean);
+        return `
         <div class="guest-card ${p.connected ? "" : "away"}">
           ${maskImg(p.mask)}
           <span class="name">${esc(p.name)}</span>
-          <small>${p.id === S.hostId ? "HOST" : ""}${p.id === myId ? (p.id === S.hostId ? " &middot; YOU" : "YOU") : ""}${p.score ? ` &middot; ${p.score} PTS` : ""}</small>
-        </div>`
-      )
+          <small>${tags.join(" &middot; ")}</small>
+        </div>`;
+      })
       .join("");
     const hostControls = `
       <div class="panel row-between">
-        <div><span class="field-label">IMPOSTERS</span><span class="muted">Hidden among the guests</span></div>
-        <div class="stepper">
-          <button class="square-btn" data-action="imposters" data-d="-1" ${S.imposters <= 1 ? "disabled" : ""} aria-label="Fewer imposters">&minus;</button>
+        <div><span class="field-label">${t("imposters")}</span><span class="muted">${t("impostersSub")}</span></div>
+        <div class="stepper" dir="ltr">
+          <button class="square-btn" data-action="imposters" data-d="-1" ${S.imposters <= 1 ? "disabled" : ""} aria-label="-">&minus;</button>
           <output>${S.imposters}</output>
-          <button class="square-btn" data-action="imposters" data-d="1" ${S.imposters >= maxImposters(n) ? "disabled" : ""} aria-label="More imposters">+</button>
+          <button class="square-btn" data-action="imposters" data-d="1" ${S.imposters >= maxImposters(n) ? "disabled" : ""} aria-label="+">+</button>
         </div>
       </div>
       <div class="btn-row">
         <button class="btn primary small" data-action="start" ${n < MIN_PLAYERS ? "disabled" : ""}>
-          <span>${n < MIN_PLAYERS ? `NEED ${MIN_PLAYERS - n} MORE` : "BEGIN THE BALL"}</span></button>
+          <span>${n < MIN_PLAYERS ? t("needMore", { n: MIN_PLAYERS - n }) : t("begin")}</span></button>
       </div>
-      <button class="link" style="margin-top:16px" data-action="settings">GAME SETTINGS</button>`;
+      <button class="link" style="margin-top:16px" data-action="settings">${t("gameSettings")}</button>`;
     return `${leaveBar()}
       <section class="screen">
-        <p class="kicker">The Ballroom</p>
-        <div class="room-code" aria-label="Room code">${esc(S.code)}</div>
-        <button class="square-btn" style="margin-top:12px" data-action="invite">INVITE FRIENDS</button>
-        ${S.message ? `<p class="notice">${esc(S.message)}</p>` : ""}
+        <p class="kicker">${t("ballroom")}</p>
+        <div class="room-code" dir="ltr">${esc(S.code)}</div>
+        <button class="square-btn" style="margin-top:12px" data-action="invite">${t("invite")}</button>
+        ${S.message ? `<p class="notice">${t(S.message)}</p>` : ""}
         <div class="panel">
-          <span class="field-label">GUESTS ${n} / ${MAX_PLAYERS}</span>
+          <span class="field-label">${t("guestsCount", { n, max: MAX_PLAYERS })}</span>
           <div class="guest-grid">${cards}</div>
-          <button class="link" style="margin-top:14px" data-action="change-mask">CHANGE MY MASK</button>
+          <button class="link" style="margin-top:14px" data-action="change-mask">${t("changeMask")}</button>
         </div>
-        ${amHost() ? hostControls : `<p class="lead muted">Waiting for the host to begin the dance&hellip;</p>`}
+        ${amHost() ? hostControls : `<p class="lead muted">${t("waitingHost")}</p>`}
       </section>`;
   },
 
@@ -253,21 +280,21 @@ const screens = {
     const inRound = S.players.filter((x) => x.inRound);
     const readyCount = inRound.filter((x) => x.ready).length;
     if (!p?.inRound || !myRole) {
-      return `${leaveBar()}<section class="screen"><p class="kicker">A dance is underway</p>
-        <h2>You'll join the next round</h2><p class="lead muted">Watch closely&hellip;</p></section>`;
+      return `${leaveBar()}<section class="screen"><p class="kicker">${t("underway")}</p>
+        <h2>${t("nextRound")}</h2><p class="lead muted">${t("watch")}</p></section>`;
     }
     const inner = myRole.isImposter
-      ? `<p class="muted" style="margin:0">You are</p>
-         <div class="secret-word imposter">The Imposter</div>
-         <p style="margin:6px 0 0">${myRole.category ? `The category is <b class="gold">${esc(myRole.category)}</b>.` : "No hints. Trust your ears."}</p>
-         <p class="hint">Blend in, listen closely, and bluff your clue.${myRole.imposterCount > 1 ? ` There are ${myRole.imposterCount} imposters tonight.` : ""}</p>`
-      : `<p class="muted" style="margin:0">Your secret word</p>
-         <div class="secret-word">${esc(myRole.word)}</div>
-         <p style="margin:6px 0 0">Category: <b class="gold">${esc(myRole.category)}</b></p>
-         <p class="hint">Hint at it, but not so plainly that the Imposter learns it.</p>`;
+      ? `<p class="muted" style="margin:0">${t("youAre")}</p>
+         <div class="secret-word imposter">${t("theImposter")}</div>
+         <p style="margin:6px 0 0">${myRole.cat ? t("catIs", { cat: gold(catName(myRole.cat)) }) : t("noHints")}</p>
+         <p class="hint">${t("blendIn")}${myRole.imposterCount > 1 ? " " + t("manyImposters", { n: myRole.imposterCount }) : ""}</p>`
+      : `<p class="muted" style="margin:0">${t("secretWord")}</p>
+         <div class="secret-word">${esc(wordText(myRole.cat, myRole.idx))}</div>
+         <p style="margin:6px 0 0">${t("category", { cat: gold(catName(myRole.cat)) })}</p>
+         <p class="hint">${t("hintAt")}</p>`;
     return `${leaveBar()}
       <section class="screen">
-        <p class="kicker">The Unveiling</p>
+        <p class="kicker">${t("unveiling")}</p>
         <div class="mask-card ${myRole.isImposter ? "imposter" : ""}">
           ${maskImg(p.mask, "card-mask")}
           <div class="persona">${esc(p.name)}</div>
@@ -275,9 +302,9 @@ const screens = {
           ${inner}
         </div>
         <div class="btn-row">
-          <button class="btn primary small" data-action="ready" ${p.ready ? "disabled" : ""}><span>${p.ready ? "READY" : "I'M READY"}</span></button>
+          <button class="btn primary small" data-action="ready" ${p.ready ? "disabled" : ""}><span>${p.ready ? t("ready") : t("imReady")}</span></button>
         </div>
-        <p class="hint">${readyCount} of ${inRound.length} ready &middot; starting in <span data-timer></span></p>
+        <p class="hint">${t("readyCount", { n: readyCount, total: inRound.length, timer: { html: '<span data-timer dir="ltr"></span>' } })}</p>
       </section>`;
   },
 
@@ -286,14 +313,14 @@ const screens = {
     const myTurn = S.turn?.id === myId;
     const form = `
       <form class="add-row clue-form" data-form="clue">
-        <input class="input" name="text" maxlength="${MAX_CLUE_LENGTH}" placeholder="One word&hellip;" autocomplete="off" data-keep="clue" autofocus>
-        <button class="square-btn" type="submit">WHISPER</button>
+        <input class="input" name="text" maxlength="${MAX_CLUE_LENGTH}" placeholder="${t("oneWordPh")}" autocomplete="off" data-keep="clue" autofocus>
+        <button class="square-btn" type="submit">${t("whisper")}</button>
       </form>
-      <p class="hint">${myRole?.isImposter ? "Bluff! Pick a word that fits the category." : "Hint at your word, but not too obviously."}</p>`;
+      <p class="hint">${myRole?.isImposter ? t("bluffHint") : t("crewHint")}</p>`;
     return `${leaveBar()}
       <section class="screen">
-        <p class="kicker">The Whispers &middot; Round ${S.turn?.round ?? 1} of ${S.clueRounds}</p>
-        <h2>${myTurn ? "Your turn to whisper" : `${esc(turn?.name ?? "A guest")} is whispering&hellip;`}</h2>
+        <p class="kicker">${t("whispersRound", { r: S.turn?.round ?? 1, of: S.clueRounds })}</p>
+        <h2>${myTurn ? t("yourTurn") : t("isWhispering", { name: turn?.name ?? "" })}</h2>
         ${timerEl()}
         ${roleBadge()}
         ${myTurn ? form : ""}
@@ -304,15 +331,15 @@ const screens = {
   g_discuss() {
     return `${leaveBar()}
       <section class="screen">
-        <p class="kicker">The Debate</p>
-        <h2>Who seems lost?</h2>
-        <p class="lead muted">Talk it over. Whose whisper didn't quite fit?</p>
+        <p class="kicker">${t("debate")}</p>
+        <h2>${t("whoLost")}</h2>
+        <p class="lead muted">${t("talk")}</p>
         ${S.endsIn != null ? timerEl() : ""}
         ${roleBadge()}
         ${clueBoard()}
         ${amHost()
-          ? `<div class="btn-row"><button class="btn primary small" data-action="to-vote"><span>CALL THE ACCUSATION</span></button></div>`
-          : `<p class="hint">The host will call the vote.</p>`}
+          ? `<div class="btn-row"><button class="btn primary small" data-action="to-vote"><span>${t("callVote")}</span></button></div>`
+          : `<p class="hint">${t("hostCalls")}</p>`}
       </section>`;
   },
 
@@ -329,19 +356,19 @@ const screens = {
         <button class="suspect ${myVote === x.id ? "selected" : ""}" data-action="vote" data-id="${esc(x.id)}" ${canVote && x.connected ? "" : "disabled"}>
           ${maskImg(x.mask)}
           <span class="name">${esc(x.name)}</span>
-          <span class="clue-words">${x.clues.map(esc).join(" &middot; ") || "&hellip;"}</span>
+          <span class="clue-words">${x.clues.map(clueText).join(" &middot; ") || "&hellip;"}</span>
         </button>`
       )
       .join("");
     return `${leaveBar()}
       <section class="screen" style="max-width:720px">
-        <p class="kicker">The Accusation</p>
-        <h2>Who wears the false face?</h2>
+        <p class="kicker">${t("accusation")}</p>
+        <h2>${t("falseFace")}</h2>
         ${timerEl()}
-        <p class="lead muted">${canVote ? (myVote ? "Vote cast. You may change it until everyone has voted." : "Tap a guest to accuse them.") : "The guests are voting."}</p>
+        <p class="lead muted">${canVote ? (myVote ? t("voteCast") : t("tapAccuse")) : t("guestsVoting")}</p>
         ${roleBadge()}
         <div class="suspects">${cards}</div>
-        <p class="hint">${votedCount} of ${voters.length} have voted</p>
+        <p class="hint">${t("votedCount", { n: votedCount, total: voters.length })}</p>
       </section>`;
   },
 
@@ -350,17 +377,17 @@ const screens = {
     const mine = S.accusedId === myId;
     return `${leaveBar()}
       <section class="screen">
-        <p class="kicker">The mask falls</p>
+        <p class="kicker">${t("maskFalls")}</p>
         ${maskImg(accused?.mask ?? 0, "hero-mask")}
-        <h2>${mine ? "You've been unmasked!" : `<span class="crimson">${esc(accused?.name ?? "")}</span> is an Imposter!`}</h2>
+        <h2>${mine ? t("youUnmasked") : t("isImposter", { name: { html: `<span class="crimson">${esc(accused?.name ?? "")}</span>` } })}</h2>
         ${timerEl()}
         ${mine
-          ? `<p class="lead">One last gambit: name the secret word and you still win.</p>
+          ? `<p class="lead">${t("lastGambit")}</p>
              <form class="add-row clue-form" data-form="guess">
-               <input class="input" name="text" maxlength="40" placeholder="The secret word is&hellip;" autocomplete="off" data-keep="guess" autofocus>
-               <button class="square-btn" type="submit">GUESS</button>
+               <input class="input" name="text" maxlength="40" placeholder="${t("guessPh")}" autocomplete="off" data-keep="guess" autofocus>
+               <button class="square-btn" type="submit">${t("guessBtn")}</button>
              </form>`
-          : `<p class="lead muted">They get one guess at the secret word. If they name it, the Imposters still win&hellip;</p>`}
+          : `<p class="lead muted">${t("theyGuess")}</p>`}
       </section>`;
   },
 
@@ -368,6 +395,7 @@ const screens = {
     const r = S.results;
     const guestsWon = r.winner === "guests";
     const inRound = S.order.map(playerById).filter(Boolean);
+    const [headline, detail] = resultLines(r);
     let myWin = null;
     if (me()?.inRound && myRole && r.winner) myWin = (r.winner === "imposter") === myRole.isImposter;
     const rows = inRound
@@ -376,29 +404,29 @@ const screens = {
         const votes = r.tally[p.id] || 0;
         return `<li>
           ${maskImg(p.mask)}
-          <span class="grow">${esc(p.name)}<br><span class="muted small">${votes ? `${votes} vote${votes === 1 ? "" : "s"}` : "no votes"}</span></span>
-          <span class="tag ${imp ? "imp" : ""}">${imp ? "IMPOSTER" : "GUEST"}</span>
+          <span class="grow">${esc(p.name)}<br><span class="muted small">${votes === 0 ? t("noVotes") : votes === 1 ? t("vote1") : t("votesN", { n: votes })}</span></span>
+          <span class="tag ${imp ? "imp" : ""}">${imp ? t("tagImp") : t("tagGuest")}</span>
           <span class="pts">${p.score}</span>
         </li>`;
       })
       .join("");
     return `${leaveBar()}
       <section class="screen">
-        <p class="kicker">${r.winner ? (guestsWon ? "The guests prevail" : "The Imposter prevails") : "The dance is over"}</p>
-        <h2${myWin === false ? ' class="crimson"' : ""}>${myWin === true ? "Victory" : myWin === false ? "Defeat" : esc(r.headline)}</h2>
-        <p class="lead">${myWin === null ? "" : esc(r.headline) + "<br>"}<span class="muted">${esc(r.detail)}</span></p>
+        <p class="kicker">${r.winner ? (guestsWon ? t("guestsPrevail") : t("impPrevail")) : t("danceOver")}</p>
+        <h2${myWin === false ? ' class="crimson"' : ""}>${myWin === true ? t("victory") : myWin === false ? t("defeat") : headline}</h2>
+        <p class="lead">${myWin === null ? "" : headline + "<br>"}<span class="muted">${detail}</span></p>
         <div class="mask-card" style="padding:22px">
-          <p class="muted" style="margin:0">The secret word was</p>
-          <div class="secret-word">${esc(r.word)}</div>
-          <p style="margin:0" class="muted">${esc(r.category)}${r.guess ? ` &middot; the Imposter guessed &ldquo;${esc(r.guess)}&rdquo;` : ""}</p>
+          <p class="muted" style="margin:0">${t("wordWas")}</p>
+          <div class="secret-word">${esc(wordText(r.cat, r.idx))}</div>
+          <p style="margin:0" class="muted">${esc(catName(r.cat))}${r.guess ? ` &middot; ${t("guessed", { guess: r.guess })}` : ""}</p>
         </div>
         <div class="panel"><ul class="reveal-list">${rows}</ul></div>
         ${amHost()
           ? `<div class="btn-row">
-               <button class="btn primary small" data-action="start"><span>ANOTHER DANCE</span></button>
-               <button class="btn" data-action="to-lobby"><span>BACK TO LOBBY</span></button>
+               <button class="btn primary small" data-action="start"><span>${t("anotherDance")}</span></button>
+               <button class="btn" data-action="to-lobby"><span>${t("backLobby")}</span></button>
              </div>`
-          : `<p class="hint">Waiting for the host&hellip;</p>`}
+          : `<p class="hint">${t("waitingHostShort")}</p>`}
       </section>`;
   },
 };
@@ -418,7 +446,7 @@ function render() {
   });
 
   $app.innerHTML =
-    (view === "game" && reconnecting ? `<div class="banner">Reconnecting&hellip;</div>` : "") + screens[key]();
+    (view === "game" && reconnecting ? `<div class="banner">${t("reconnecting")}</div>` : "") + screens[key]();
 
   if (same) {
     $app.querySelector(".screen")?.classList.add("still");
@@ -461,14 +489,14 @@ function sendAction(msg) {
   if (!net) return;
   if (net.isHost) hostAction(myId, msg);
   else if (net.conn?.open) net.conn.send(msg);
-  else toast("Not connected. Retrying…");
+  else toast(plain(t("n_notConnected")));
 }
 
 function leaveNet() {
   if (!net) return;
   net.closing = true;
   if (net.isHost && H) {
-    for (const p of H.players) if (p.conn) hostSend(p, { t: "closed", text: "The host ended the ball." });
+    for (const p of H.players) if (p.conn) hostSend(p, { t: "closed", key: "c_hostEnded" });
     clearTimeout(H.timeout);
   }
   const peer = net.peer;
@@ -482,9 +510,9 @@ function leaveNet() {
   releaseWakeLock();
 }
 
-function failToProfile(message) {
+function failToProfile(key, vars) {
   leaveNet();
-  notice = message;
+  notice = plain(t(key, vars));
   view = "profile";
   render();
 }
@@ -513,19 +541,19 @@ function onHostMessage(msg) {
       saveProfile();
       break;
     case "error":
-      toast(msg.text);
+      toast(plain(t(msg.key)));
       break;
     case "closed":
-      failToProfile(msg.text);
+      failToProfile(msg.key);
       break;
   }
 }
 
 function startHosting(attempt = 0) {
-  if (typeof Peer === "undefined") return failToProfile("Couldn't load the connection library. Check your internet.");
+  if (typeof Peer === "undefined") return failToProfile("n_lib");
   const code = makeCode();
   view = "connecting";
-  connectingText = "Opening the ballroom…";
+  connecting = { key: "opening" };
   render();
   const peer = new Peer(ROOM_PREFIX + code, { debug: 0 });
   net = { isHost: true, peer, code, closing: false };
@@ -541,16 +569,16 @@ function startHosting(attempt = 0) {
       peer.destroy();
       startHosting(attempt + 1);
     } else if (view === "connecting") {
-      failToProfile(`Couldn't open a room (${err.type}). Check your internet and try again.`);
+      failToProfile("n_open", { err: err.type });
     }
   });
   requestWakeLock();
 }
 
 function joinRoom(code) {
-  if (typeof Peer === "undefined") return failToProfile("Couldn't load the connection library. Check your internet.");
+  if (typeof Peer === "undefined") return failToProfile("n_lib");
   view = "connecting";
-  connectingText = `Finding room ${code}…`;
+  connecting = { key: "finding", vars: { code } };
   render();
   const peer = new Peer({ debug: 0 });
   net = { isHost: false, peer, code, conn: null, retries: 0, closing: false };
@@ -561,11 +589,11 @@ function joinRoom(code) {
   });
   peer.on("error", (err) => {
     if (thisNet.closing) return;
-    if (!S) failToProfile(err.type === "peer-unavailable" ? `No room called ${code}. Check the code with your host.` : `Connection failed (${err.type}).`);
+    if (!S) failToProfile(err.type === "peer-unavailable" ? "n_noRoom" : "n_connFail", { code, err: err.type });
     else scheduleReconnect(thisNet);
   });
   setTimeout(() => {
-    if (net === thisNet && !S) failToProfile("Couldn't reach the room. Try again, or switch to Wi-Fi.");
+    if (net === thisNet && !S) failToProfile("n_cantReach");
   }, 15000);
   requestWakeLock();
 }
@@ -586,7 +614,7 @@ function clientConnect(thisNet) {
 
 function scheduleReconnect(thisNet) {
   if (thisNet.closing || net !== thisNet || thisNet.waiting) return;
-  if (thisNet.retries++ >= 10) return failToProfile("Lost connection to the room.");
+  if (thisNet.retries++ >= 10) return failToProfile("n_lost");
   reconnecting = true;
   render();
   thisNet.waiting = true;
@@ -621,7 +649,7 @@ let H = null;
 
 const hostPlayer = (id) => H.players.find((p) => p.id === id);
 const hostActive = () => H.players.filter((p) => p.inRound && p.connected);
-const hostNames = (ids) => ids.map((id) => hostPlayer(id)?.name ?? "someone").join(" & ");
+const hostImposterIds = () => [...H.roles].filter(([, r]) => r.isImposter).map(([id]) => id);
 
 function hostInit(code) {
   H = {
@@ -639,8 +667,7 @@ function hostInit(code) {
     turnId: null,
     endsAt: null,
     timeout: null,
-    word: null,
-    category: null,
+    word: null, // { cat, idx }
     lastWord: null,
     accusedId: null,
     results: null,
@@ -685,7 +712,7 @@ function hostHello(conn, msg) {
     if (old && old !== conn) old.close();
   } else {
     if (H.players.length >= MAX_PLAYERS) {
-      conn.send({ t: "closed", text: "This ball is full." });
+      conn.send({ t: "closed", key: "c_full" });
       return;
     }
     p = hostAddPlayer(id, msg.name, Number(msg.mask), conn);
@@ -750,6 +777,12 @@ function hostTimer(seconds, fn) {
   H.timeout = seconds ? setTimeout(fn, seconds * 1000) : null;
 }
 
+// The secret word in both languages, for checking clues and guesses typed in either.
+function hostWordForms() {
+  const { cat, idx } = H.word;
+  return [WORDS[cat][idx], WORDS_AR[cat]?.[idx]].filter(Boolean).map(normWord);
+}
+
 function hostAction(id, msg) {
   const p = hostPlayer(id);
   if (!p || !msg) return;
@@ -758,7 +791,7 @@ function hostAction(id, msg) {
     case "mask": {
       const m = Number(msg.mask);
       if (!validMask(m)) return;
-      if (H.players.some((x) => x !== p && x.mask === m)) return hostSend(p, { t: "error", text: "Another guest is wearing that mask." });
+      if (H.players.some((x) => x !== p && x.mask === m)) return hostSend(p, { t: "error", key: "e_maskTaken" });
       p.mask = m;
       hostSend(p, { t: "mask", mask: m });
       return hostBroadcast();
@@ -771,7 +804,7 @@ function hostAction(id, msg) {
     case "clue": {
       if (H.phase !== "clues" || H.turnId !== id) return;
       const [clue, error] = hostValidateClue(p, msg.text);
-      if (!clue) return hostSend(p, { t: "error", text: error });
+      if (!clue) return hostSend(p, { t: "error", key: error });
       p.clues.push(clue);
       return hostNextTurn();
     }
@@ -787,10 +820,8 @@ function hostAction(id, msg) {
       if (H.phase !== "guess" || H.accusedId !== id) return;
       const guess = String(msg.text ?? "").trim().slice(0, 40);
       if (!guess) return;
-      if (normalize(guess) === normalize(H.word)) {
-        return hostFinish("imposter", `${p.name} named the word!`, "Unmasked, yet victorious.", guess);
-      }
-      return hostFinish("guests", `${p.name} is unmasked!`, "Their last guess missed the mark.", guess);
+      const correct = hostWordForms().includes(normWord(guess));
+      return hostFinish(correct ? "imposter" : "guests", correct ? "named" : "missed", guess);
     }
     // Host-only controls
     case "imposters":
@@ -812,37 +843,41 @@ function hostAction(id, msg) {
 
 function hostValidateClue(p, raw) {
   const text = String(raw ?? "").trim().replace(/\s+/g, " ");
-  if (!text) return [null, "Whisper something, mysterious one."];
-  if (text.length > MAX_CLUE_LENGTH) return [null, "That clue is too long."];
-  if (text.includes(" ")) return [null, "One word only!"];
+  if (!text) return [null, "e_clueEmpty"];
+  if (text.length > MAX_CLUE_LENGTH) return [null, "e_clueLong"];
+  if (text.includes(" ")) return [null, "e_oneWord"];
   // Only honest guests are blocked; telling the Imposter would leak the word.
-  if (!H.roles.get(p.id).isImposter && normalize(text).includes(normalize(H.word))) {
-    return [null, "You can't say the secret word!"];
+  // Short words only match exactly, so a two-letter word doesn't block every clue containing it.
+  if (!H.roles.get(p.id).isImposter) {
+    const clue = normWord(text);
+    if (hostWordForms().some((w) => w && (clue === w || (w.length >= 4 && clue.includes(w))))) {
+      return [null, "e_saidWord"];
+    }
   }
   return [text, null];
 }
 
 function hostPickWord() {
   const cats = settings.categories.length ? settings.categories : Object.keys(WORDS);
-  let category, word;
+  let cat, idx;
   for (let tries = 0; tries < 10; tries++) {
-    category = cats[rand(cats.length)];
-    word = WORDS[category][rand(WORDS[category].length)];
-    if (word !== H.lastWord) break;
+    cat = cats[rand(cats.length)];
+    idx = rand(WORDS[cat].length);
+    if (`${cat}:${idx}` !== H.lastWord) break;
   }
-  H.lastWord = word;
-  return { category, word };
+  H.lastWord = `${cat}:${idx}`;
+  return { cat, idx };
 }
 
 function hostStartRound() {
   H.players = H.players.filter((p) => p.connected);
   const players = H.players;
-  if (players.length < MIN_PLAYERS) return hostToLobby("Not enough guests to begin.");
+  if (players.length < MIN_PLAYERS) return hostToLobby("m_notEnough");
 
   const count = clamp(H.imposters, 1, maxImposters(players.length));
-  const { category, word } = hostPickWord();
+  const word = hostPickWord();
   const imposterIds = new Set(shuffle(players.map((p) => p.id)).slice(0, count));
-  Object.assign(H, { word, category, roundId: H.roundId + 1, accusedId: null, results: null, message: "", turnId: null });
+  Object.assign(H, { word, roundId: H.roundId + 1, accusedId: null, results: null, message: "", turnId: null });
   H.roles.clear();
   H.votes.clear();
 
@@ -851,8 +886,8 @@ function hostStartRound() {
     Object.assign(p, { inRound: true, ready: false, voted: false, clues: [] });
     const role = {
       isImposter,
-      word: isImposter ? null : word,
-      category: isImposter && !settings.imposterSeesCategory ? null : category,
+      cat: isImposter && !settings.imposterSeesCategory ? null : word.cat,
+      idx: isImposter ? null : word.idx,
       imposterCount: count,
     };
     H.roles.set(p.id, role);
@@ -897,7 +932,7 @@ function hostNextTurn() {
     if (p?.connected && p.inRound) {
       H.turnId = p.id;
       hostTimer(settings.clueTime, () => {
-        p.clues.push("(silence)");
+        p.clues.push(null); // shown as "(silence)"
         hostNextTurn();
       });
       return hostBroadcast();
@@ -938,44 +973,34 @@ function hostTally() {
     if (n > best) [top, best, tie] = [id, n, false];
     else if (n === best) tie = true;
   }
-  const imposterIds = [...H.roles].filter(([, r]) => r.isImposter).map(([id]) => id);
-  if (!top || tie) {
-    return hostFinish("imposter", "The guests couldn't agree", "No one was unmasked, and the Imposter dances on.");
-  }
+  if (!top || tie) return hostFinish("imposter", "noAgree");
   H.accusedId = top;
-  const accused = hostPlayer(top);
-  if (!H.roles.get(top)?.isImposter) {
-    return hostFinish("imposter", `${accused.name} was innocent!`, `The Imposter${imposterIds.length > 1 ? "s were" : " was"} ${hostNames(imposterIds)}.`);
-  }
+  if (!H.roles.get(top)?.isImposter) return hostFinish("imposter", "innocent");
   H.phase = "guess";
-  hostTimer(GUESS_TIME, () => hostFinish("guests", `${accused.name} is unmasked!`, "They ran out of time to guess the word."));
+  hostTimer(GUESS_TIME, () => hostFinish("guests", "timeout"));
   hostBroadcast();
 }
 
 function hostRoundHealth() {
   if (!["reveal", "clues", "discuss", "vote", "guess"].includes(H.phase)) return;
   const active = hostActive();
-  if (!active.some((p) => H.roles.get(p.id)?.isImposter)) {
-    return hostFinish("guests", "The Imposter fled!", "They slipped out of the ball before being unmasked.");
-  }
-  if (active.length < MIN_PLAYERS) return hostToLobby("Too many guests left, so the dance was cancelled.");
-  if (H.phase === "guess" && !hostPlayer(H.accusedId)?.connected) {
-    return hostFinish("guests", "The Imposter fled!", "They left before making their guess.");
-  }
+  if (!active.some((p) => H.roles.get(p.id)?.isImposter)) return hostFinish("guests", "fled");
+  if (active.length < MIN_PLAYERS) return hostToLobby("m_cancelled");
+  if (H.phase === "guess" && !hostPlayer(H.accusedId)?.connected) return hostFinish("guests", "fledGuess");
 }
 
-function hostFinish(winner, headline, detail, guess = null) {
+function hostFinish(winner, reason, guess = null) {
   hostTimer(0);
   H.phase = "results";
   H.turnId = null;
-  const imposterIds = [...H.roles].filter(([, r]) => r.isImposter).map(([id]) => id);
+  const imposterIds = hostImposterIds();
   for (const p of H.players) {
     if (!p.inRound) continue;
     const imp = imposterIds.includes(p.id);
     if (winner === "guests" && !imp) p.score += POINTS_GUEST_WIN;
     if (winner === "imposter" && imp) p.score += POINTS_IMPOSTER_WIN;
   }
-  H.results = { winner, headline, detail, guess, word: H.word, category: H.category, imposterIds, tally: H.tally || {} };
+  H.results = { winner, reason, guess, accusedId: H.accusedId, cat: H.word.cat, idx: H.word.idx, imposterIds, tally: H.tally || {} };
   H.tally = null;
   hostBroadcast();
 }
@@ -993,6 +1018,8 @@ function hostToLobby(message) {
 
 // ---------------------------------------------------------------- modals
 
+let confirmAction = null;
+
 function openModal(html) {
   $modal.innerHTML = `<div class="panel" role="dialog" aria-modal="true">${html}</div>`;
   $modal.hidden = false;
@@ -1005,75 +1032,69 @@ function closeModal() {
 }
 
 // Themed replacement for the browser's confirm() dialog.
-let confirmAction = null;
-function askConfirm({ kicker, title, body, ok, cancel = "STAY" }, onOk) {
+function askConfirm({ kicker, title, body, ok, cancel = t("stay") }, onOk) {
   openModal(`
-    <p class="kicker" style="text-align:center">${esc(kicker)}</p>
-    <h2>${esc(title)}</h2>
+    <p class="kicker" style="text-align:center">${kicker}</p>
+    <h2>${title}</h2>
     <div class="divider">&#10022;</div>
-    <p class="lead" style="text-align:center;margin-top:0">${esc(body)}</p>
+    <p class="lead" style="text-align:center;margin-top:0">${body}</p>
     <div class="btn-row">
-      <button class="btn" data-action="close-modal"><span>${esc(cancel)}</span></button>
-      <button class="btn primary small" data-action="confirm-ok"><span>${esc(ok)}</span></button>
+      <button class="btn" data-action="close-modal"><span>${cancel}</span></button>
+      <button class="btn primary small" data-action="confirm-ok"><span>${ok}</span></button>
     </div>`);
   confirmAction = onOk;
   $modal.querySelector('[data-action="close-modal"]').focus();
 }
 
 function showRules() {
+  const rules = [1, 2, 3, 4, 5, 6].map((n) => `<li>${t("rule" + n)}</li>`).join("");
   openModal(`
-    <p class="kicker" style="text-align:center">Everyone hides a secret</p>
-    <h2>How to Play</h2>
+    <p class="kicker" style="text-align:center">${t("tagline")}</p>
+    <h2>${t("rulesTitle")}</h2>
     <div class="divider">&#10022;</div>
-    <ol>
-      <li><b>Gather your guests.</b> One player hosts a ball and shares the room code. Everyone joins on their own phone and picks a mask.</li>
-      <li><b>The Unveiling.</b> Every guest secretly receives the same <b>secret word</b>, except the <b>Imposter</b>, who only learns the category.</li>
-      <li><b>The Whispers.</b> In turn, each guest types one word that hints at the secret word. Too obvious, and the Imposter catches on. Too vague, and you'll look suspicious.</li>
-      <li><b>The Debate.</b> Talk it over. Whose whisper didn't fit?</li>
-      <li><b>The Accusation.</b> Everyone votes in secret. The guest with the most votes is unmasked.</li>
-      <li><b>The Last Gambit.</b> An unmasked Imposter gets one guess at the word. If they're right, they still win.</li>
-    </ol>
-    <p class="hint">Guests earn ${POINTS_GUEST_WIN} point for catching the Imposter. Imposters earn ${POINTS_IMPOSTER_WIN} for getting away with it.</p>
-    <div class="btn-row"><button class="btn" data-action="close-modal"><span>CLOSE</span></button></div>`);
+    <ol>${rules}</ol>
+    <p class="hint">${t("rulesPoints", { g: POINTS_GUEST_WIN, i: POINTS_IMPOSTER_WIN })}</p>
+    <div class="btn-row"><button class="btn" data-action="close-modal"><span>${t("close")}</span></button></div>`);
 }
 
 function showSettings() {
   const toggle = (key, title, sub) => `
     <div class="setting">
-      <div>${title}<small>${sub}</small></div>
-      <button class="toggle" role="switch" aria-checked="${settings[key]}" data-action="toggle-setting" data-key="${key}" aria-label="${title}"></button>
+      <div>${t(title)}<small>${t(sub)}</small></div>
+      <button class="toggle" role="switch" aria-checked="${settings[key]}" data-action="toggle-setting" data-key="${key}" aria-label="${t(title)}"></button>
     </div>`;
   const select = (key, title, sub, options) => `
     <div class="setting">
-      <div>${title}<small>${sub}</small></div>
+      <div>${t(title)}<small>${t(sub)}</small></div>
       <select class="select" data-setting="${key}">${options
         .map(([v, label]) => `<option value="${v}" ${settings[key] === v ? "selected" : ""}>${label}</option>`)
         .join("")}</select>
     </div>`;
   const cats = Object.keys(WORDS)
-    .map((c) => `<button class="chip" aria-pressed="${settings.categories.includes(c)}" data-action="toggle-category" data-cat="${esc(c)}">${esc(c)}</button>`)
+    .map((c) => `<button class="chip" aria-pressed="${settings.categories.includes(c)}" data-action="toggle-category" data-cat="${esc(c)}">${esc(catName(c))}</button>`)
     .join("");
   openModal(`
-    <h2>Settings</h2>
-    <p class="hint" style="text-align:center;margin-top:0">These apply to balls you host.</p>
+    <h2>${t("settingsTitle")}</h2>
     <div class="divider">&#10022;</div>
-    ${toggle("imposterSeesCategory", "Imposter sees the category", "A small hint to help them bluff")}
-    ${toggle("imposterNeverFirst", "Imposter never whispers first", "Gives them one clue to listen to")}
-    ${select("clueRounds", "Whisper rounds", "Clues per guest", [[1, "1"], [2, "2"], [3, "3"]])}
-    ${select("clueTime", "Time per whisper", "Before the turn is skipped", [[20, "0:20"], [30, "0:30"], [45, "0:45"], [60, "1:00"]])}
-    ${select("discussTime", "Debate time", "Before the vote starts", [[0, "Host decides"], [60, "1:00"], [90, "1:30"], [120, "2:00"], [180, "3:00"]])}
-    <span class="field-label" style="margin-top:14px">CATEGORIES</span>
+    ${select("lang", "langLabel", "langSub", [["en", "English"], ["ar", "العربية"]])}
+    <p class="hint" style="text-align:center;margin-top:18px">${t("hostSettings")}</p>
+    ${toggle("imposterSeesCategory", "s_cat", "s_catSub")}
+    ${toggle("imposterNeverFirst", "s_first", "s_firstSub")}
+    ${select("clueRounds", "s_rounds", "s_roundsSub", [[1, "1"], [2, "2"], [3, "3"]])}
+    ${select("clueTime", "s_time", "s_timeSub", [[20, "0:20"], [30, "0:30"], [45, "0:45"], [60, "1:00"]])}
+    ${select("discussTime", "s_debate", "s_debateSub", [[0, t("hostDecides")], [60, "1:00"], [90, "1:30"], [120, "2:00"], [180, "3:00"]])}
+    <span class="field-label" style="margin-top:14px">${t("categories")}</span>
     <div class="chips">${cats}</div>
-    <div class="btn-row"><button class="btn" data-action="close-modal"><span>DONE</span></button></div>`);
+    <div class="btn-row"><button class="btn" data-action="close-modal"><span>${t("done")}</span></button></div>`);
 }
 
 function showMaskModal() {
   const taken = new Set(S.players.filter((p) => p.id !== myId).map((p) => p.mask));
   openModal(`
-    <h2>Choose your mask</h2>
+    <h2>${t("chooseMaskTitle")}</h2>
     <div class="divider">&#10022;</div>
     ${maskPicker(taken)}
-    <div class="btn-row"><button class="btn" data-action="close-modal"><span>DONE</span></button></div>`);
+    <div class="btn-row"><button class="btn" data-action="close-modal"><span>${t("done")}</span></button></div>`);
 }
 
 function saveSettings() {
@@ -1086,7 +1107,7 @@ function requireName() {
   profile.name = cleanName(document.getElementById("name-input")?.value ?? profile.name);
   saveProfile();
   if (!profile.name) {
-    notice = "Enter your name first.";
+    notice = plain(t("n_enterName"));
     render();
     document.getElementById("name-input")?.focus();
     return false;
@@ -1126,7 +1147,7 @@ const actions = {
     const hero = $app.querySelector(".hero-mask");
     if (hero) hero.outerHTML = maskImg(m, "hero-mask");
     const label = $app.querySelector(".mask-name");
-    if (label) label.textContent = MASKS[m].name;
+    if (label) label.textContent = maskName(m);
   },
   host: () => {
     if (!requireName()) return;
@@ -1142,10 +1163,10 @@ const actions = {
     const host = amHost();
     askConfirm(
       {
-        kicker: "Slipping away?",
-        title: host ? "End the ball?" : "Leave the ball?",
-        body: host ? "You're the host. If you leave, the ball ends for every guest." : "You can rejoin with the room code while the ball is still going.",
-        ok: host ? "END THE BALL" : "LEAVE",
+        kicker: t("slipping"),
+        title: host ? t("endBallQ") : t("leaveBallQ"),
+        body: host ? t("hostLeaveBody") : t("guestLeaveBody"),
+        ok: host ? t("endBall") : t("leaveBtn"),
       },
       () => {
         leaveNet();
@@ -1157,10 +1178,10 @@ const actions = {
   },
   invite: async () => {
     const url = `${location.origin}${location.pathname}?room=${S.code}`;
-    const text = `Join my masquerade! Room code: ${S.code}`;
+    const text = plain(t("inviteText", { code: S.code }));
     if (navigator.share) {
       try {
-        await navigator.share({ title: "The Masquerade", text, url });
+        await navigator.share({ title: plain(t("docTitle")), text, url });
         return;
       } catch (e) {
         if (e.name === "AbortError") return;
@@ -1168,9 +1189,9 @@ const actions = {
     }
     try {
       await navigator.clipboard.writeText(`${text}\n${url}`);
-      toast("Invite link copied!");
+      toast(plain(t("inviteCopied")));
     } catch {
-      toast(`Share this code: ${S.code}`);
+      toast(plain(t("shareCode", { code: S.code })));
     }
   },
   "change-mask": showMaskModal,
@@ -1218,10 +1239,19 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("change", (e) => {
   const key = e.target.dataset?.setting;
-  if (key) {
-    settings[key] = Number(e.target.value);
+  if (!key) return;
+  if (key === "lang") {
+    // Language is personal: it only changes this device, so redraw everything here.
+    settings.lang = e.target.value;
     saveSettings();
+    applyLang(settings.lang);
+    lastKey = "";
+    render();
+    showSettings();
+    return;
   }
+  settings[key] = Number(e.target.value);
+  saveSettings();
 });
 
 document.addEventListener("submit", (e) => {
@@ -1232,7 +1262,7 @@ document.addEventListener("submit", (e) => {
   if (form === "join") {
     if (!requireName()) return;
     if (!/^[A-Z]{4}$/.test(value.toUpperCase())) {
-      notice = "Room codes are 4 letters.";
+      notice = plain(t("n_codeLetters"));
       return render();
     }
     pendingCode = value.toUpperCase();
