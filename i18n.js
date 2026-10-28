@@ -187,6 +187,8 @@ const STRINGS = {
     categories: "CATEGORIES",
     done: "DONE",
     chooseMaskTitle: "Choose your mask",
+    installTitle: "Get the app",
+    installBody: "Tap {share} then “Add to Home Screen”.",
   },
 
   ar: {
@@ -369,6 +371,8 @@ const STRINGS = {
     categories: "الفئات",
     done: "تم",
     chooseMaskTitle: "اختر قناعك",
+    installTitle: "حمّل التطبيق",
+    installBody: "اضغط {share} ثم «إضافة إلى الشاشة الرئيسية».",
   },
 };
 

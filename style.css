@@ -666,6 +666,38 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
 .reveal-list .tag.imp { color: var(--crimson); border-color: var(--crimson); }
 .reveal-list .pts { font-family: var(--title); color: var(--gold); font-size: 18px; min-width: 28px; text-align: right; }
 
+/* ---------------------------------------------------------------- install hint */
+
+.install-hint {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: min(440px, 100%);
+  margin-top: 26px;
+  padding: 14px 44px;
+  border: 1px dashed var(--gold-dim);
+  border-radius: 14px;
+  background: rgba(20, 8, 11, 0.7);
+  font-size: 18px;
+}
+.install-hint b { font-family: var(--title); font-size: 14px; letter-spacing: 0.2em; color: var(--gold); font-weight: 600; }
+.share-icon { width: 20px; height: 20px; vertical-align: -4px; color: #4da3ff; }
+.chip-x {
+  position: absolute;
+  top: 6px;
+  inset-inline-end: 6px;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+}
+.chip-x:hover { color: var(--cream); background: rgba(0, 0, 0, 0.3); }
+
 /* ---------------------------------------------------------------- status */
 
 .screen.still,

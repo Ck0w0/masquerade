@@ -156,6 +156,21 @@ function maskPicker(taken = new Set()) {
   ).join("")}</div>`;
 }
 
+// iPhones can't be prompted to install, so tell Safari users how to add the app themselves.
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isInstalled = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+const showInstallHint = () => isIOS && !isInstalled && !store.get("installHintHidden", false);
+
+function installHint() {
+  const shareIcon = `<svg class="share-icon" viewBox="0 0 24 24" aria-label="Share"><path d="M12 3v12M7.5 7.5 12 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11H6a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+  return `
+    <div class="install-hint">
+      <button class="chip-x" data-action="hide-install" aria-label="${t("close")}">&times;</button>
+      <b>${t("installTitle")}</b>
+      <span>${t("installBody", { share: { html: shareIcon } })}</span>
+    </div>`;
+}
+
 function resultLines(r) {
   const name = playerById(r.accusedId)?.name ?? "";
   const names = r.imposterIds.map((id) => playerById(id)?.name ?? "?").join(t("and"));
@@ -189,6 +204,7 @@ const screens = {
           <button class="btn" style="width:94%" data-action="rules"><span>${t("howTo")}</span></button>
           <button class="btn" style="width:94%" data-action="settings"><span>${t("settings")}</span></button>
         </div>
+        ${showInstallHint() ? installHint() : ""}
       </section>`;
   },
 
@@ -1194,6 +1210,10 @@ const actions = {
       toast(plain(t("shareCode", { code: S.code })));
     }
   },
+  "hide-install": () => {
+    store.set("installHintHidden", true);
+    render();
+  },
   "change-mask": showMaskModal,
   imposters: ({ d }) => sendAction({ t: "imposters", d: Number(d) }),
   start: () => sendAction({ t: "start" }),
@@ -1282,3 +1302,8 @@ document.addEventListener("keydown", (e) => {
 // Arriving from an invite link goes straight to the join screen.
 if (pendingCode) view = "profile";
 render();
+
+// Makes the game installable as a home-screen app (only works over https, e.g. GitHub Pages).
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
