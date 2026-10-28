@@ -92,43 +92,13 @@ const myId = profile.token;
 const me = () => S?.players.find((p) => p.id === myId);
 const playerById = (id) => S?.players.find((p) => p.id === id);
 const amHost = () => !!net?.isHost;
-const maskImg = (i, cls = "") => `<img class="${cls}" src="${MASKS[i] ?? MASKS[0]}" alt="" draggable="false">`;
+const maskImg = (i, cls = "") => maskArt(i, cls);
 
 function toast(text) {
   $toast.textContent = text;
   $toast.classList.add("show");
   clearTimeout(toast.handle);
   toast.handle = setTimeout(() => $toast.classList.remove("show"), 2800);
-}
-
-let svgId = 0;
-function maskSVG({ cls = "" } = {}) {
-  const id = "mask" + svgId++;
-  const shape =
-    "M120 40 C100 20 40 10 14 30 C4 40 10 70 30 88 C50 106 90 104 108 86 C114 80 117 76 120 76 " +
-    "C123 76 126 80 132 86 C150 104 190 106 210 88 C230 70 236 40 226 30 C200 10 140 20 120 40 Z";
-  const feather = (rot, fill) =>
-    `<path transform="translate(196 88) rotate(${rot})" fill="${fill}" stroke="#2a0a12" stroke-width="1"
-       d="M0 0 C6 -24 18 -52 40 -74 C38 -46 26 -20 0 0 Z M3 -4 L36 -68" />`;
-  return `<svg class="${cls}" viewBox="0 0 260 170" aria-hidden="true">
-    <defs>
-      <clipPath id="${id}-l"><rect x="0" y="0" width="120" height="170" /></clipPath>
-      <linearGradient id="${id}-g" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#f6d79c" /><stop offset="1" stop-color="#a87a3c" />
-      </linearGradient>
-    </defs>
-    ${feather(-26, "#5a1020") + feather(-8, "#7a1729") + feather(10, "#4a0c18")}
-    <g transform="translate(10 40)">
-      <path d="${shape}" fill="#f0e0c0" />
-      <path d="${shape}" fill="#7a1729" clip-path="url(#${id}-l)" />
-      <path d="M40 40 C60 50 80 70 100 66 M150 70 C170 74 196 56 210 44" stroke="url(#${id}-g)" stroke-width="1.2" fill="none" opacity=".6" />
-      <ellipse cx="70" cy="58" rx="27" ry="15" transform="rotate(10 70 58)" fill="#140a0c" stroke="url(#${id}-g)" stroke-width="3" />
-      <ellipse cx="170" cy="58" rx="27" ry="15" transform="rotate(-10 170 58)" fill="#140a0c" stroke="url(#${id}-g)" stroke-width="3" />
-      <path d="${shape}" fill="none" stroke="url(#${id}-g)" stroke-width="4" />
-      <path d="M120 8 L132 26 L120 44 L108 26 Z" fill="#7a1729" stroke="url(#${id}-g)" stroke-width="3" />
-      <path d="M214 64 L218 96" stroke="url(#${id}-g)" stroke-width="2" /><path d="M213 96 h10 l-2 22 h-6 Z" fill="url(#${id}-g)" />
-    </g>
-  </svg>`;
 }
 
 // ---------------------------------------------------------------- shared UI pieces
@@ -171,7 +141,7 @@ function timerEl() {
 function maskPicker(taken = new Set()) {
   return `<div class="mask-picker">${MASKS.map(
     (_, i) => `<button class="mask-opt ${i === profile.mask ? "selected" : ""}" data-action="pick-mask" data-i="${i}"
-        ${taken.has(i) ? "disabled" : ""} aria-label="Mask ${i + 1}">${maskImg(i)}</button>`
+        ${taken.has(i) ? "disabled" : ""} title="${esc(MASKS[i].name)}" aria-label="${esc(MASKS[i].name)}">${maskImg(i)}</button>`
   ).join("")}</div>`;
 }
 
@@ -181,7 +151,7 @@ const screens = {
   menu() {
     return `
       <section class="screen">
-        ${maskSVG({ cls: "mask-art" })}
+        ${maskImg(0, "mask-art")}
         <h1>
           <span class="title-the" style="display:block">The</span>
           <span class="title-main" style="display:block">Masquerade</span>
@@ -215,6 +185,7 @@ const screens = {
       <section class="screen">
         <p class="kicker">Your disguise</p>
         ${maskImg(profile.mask, "hero-mask")}
+        <p class="mask-name">${esc(MASKS[profile.mask].name)}</p>
         <div class="panel">
           <label class="field-label" for="name-input">YOUR NAME</label>
           <input id="name-input" class="input" maxlength="16" placeholder="Your name" autocomplete="off"
@@ -1131,7 +1102,9 @@ const actions = {
     saveProfile();
     document.querySelectorAll(".mask-opt").forEach((el) => el.classList.toggle("selected", Number(el.dataset.i) === m));
     const hero = $app.querySelector(".hero-mask");
-    if (hero) hero.src = MASKS[m];
+    if (hero) hero.outerHTML = maskImg(m, "hero-mask");
+    const label = $app.querySelector(".mask-name");
+    if (label) label.textContent = MASKS[m].name;
   },
   host: () => {
     if (!requireName()) return;

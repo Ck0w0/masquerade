@@ -156,6 +156,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .screen {
   width: 100%;
   max-width: 560px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -259,7 +260,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   margin-top: 4px;
 }
 .title-main {
-  font-size: clamp(44px, 12.5vw, 92px);
+  font-size: clamp(34px, 10.5vw, 92px);
   line-height: 1;
   letter-spacing: 0.02em;
   font-weight: 600;
@@ -470,6 +471,15 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   animation: float 6s ease-in-out infinite;
 }
 
+.mask-name {
+  font-family: var(--title);
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin: 4px 0 0;
+}
+
 .mask-picker {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
@@ -490,7 +500,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   background: rgba(0, 0, 0, 0.25);
   transition: border-color 0.15s, background 0.15s, transform 0.15s;
 }
-.mask-opt img { width: 100%; height: 100%; object-fit: contain; }
+.mask-opt svg { width: 100%; height: 100%; object-fit: contain; }
 .mask-opt:hover:not(:disabled) { border-color: var(--gold-dim); }
 .mask-opt.selected {
   border-color: var(--gold);
@@ -542,7 +552,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   text-align: center;
   animation: rise 0.4s cubic-bezier(.2, .8, .2, 1);
 }
-.guest-card img { width: 72px; height: 56px; object-fit: contain; }
+.guest-card svg { width: 72px; height: 56px; object-fit: contain; }
 .guest-card .name { font-size: 18px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .guest-card small { font-family: var(--title); font-size: 10px; letter-spacing: 0.14em; color: var(--gold); min-height: 1em; }
 .guest-card.away { opacity: 0.35; }
@@ -587,7 +597,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   transition: background 0.2s;
 }
 .clue-row:last-child { border-bottom: 0; }
-.clue-row img { width: 48px; height: 40px; object-fit: contain; flex: none; }
+.clue-row svg { width: 48px; height: 40px; object-fit: contain; flex: none; }
 .clue-row.active { background: rgba(107, 20, 36, 0.45); box-shadow: inset 0 0 0 1px var(--gold); }
 .clue-row.away { opacity: 0.4; }
 .clue-name { font-family: var(--title); font-size: 13px; letter-spacing: 0.1em; color: var(--gold); }
@@ -620,7 +630,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   transform: translateY(-2px);
   box-shadow: 0 0 30px rgba(214, 52, 72, 0.3);
 }
-.suspect img { width: 90px; height: 70px; object-fit: contain; }
+.suspect svg { width: 90px; height: 70px; object-fit: contain; }
 .suspect .name { font-size: 21px; font-weight: 600; }
 .suspect .clue-words { font-size: 16px; color: var(--muted); }
 
@@ -641,7 +651,7 @@ h3 { font-size: 20px; letter-spacing: 0.08em; }
   line-height: 1.2;
 }
 .reveal-list li:last-child { border-bottom: 0; }
-.reveal-list img { width: 48px; height: 40px; object-fit: contain; flex: none; }
+.reveal-list svg { width: 48px; height: 40px; object-fit: contain; flex: none; }
 .reveal-list .tag {
   font-family: var(--title);
   font-size: 11px;
